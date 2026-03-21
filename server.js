@@ -45,9 +45,10 @@ app.post("/scan", async (req, res) => {
     // Handle login if configured
     if (login?.loginUrl && login.fields?.length > 0) {
       await page.goto(login.loginUrl, {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
         timeout: 30000,
       });
+      await page.waitForTimeout(2000);
 
       for (const field of login.fields) {
         // Try to find the input by its associated label text
@@ -81,11 +82,16 @@ app.post("/scan", async (req, res) => {
       }
 
       // Wait for navigation after login
-      await page.waitForLoadState("networkidle", { timeout: 15000 });
+      await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
+      await page.waitForTimeout(2000);
     }
 
     // Navigate to the target URL
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+    // Use domcontentloaded instead of networkidle — many modern sites
+    // never fully go idle due to analytics, websockets, etc.
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    // Give JS-rendered content a moment to settle
+    await page.waitForTimeout(3000);
 
     // Run axe-core scan targeting WCAG 2.1 A and AA
     const results = await new AxeBuilder({ page })
@@ -160,9 +166,10 @@ app.post("/scan/batch", async (req, res) => {
         // Handle login if configured
         if (login?.loginUrl && login.fields?.length > 0) {
           await page.goto(login.loginUrl, {
-            waitUntil: "networkidle",
+            waitUntil: "domcontentloaded",
             timeout: 30000,
           });
+          await page.waitForTimeout(2000);
           for (const field of login.fields) {
             const input = page.getByLabel(field.label, { exact: false });
             try {
@@ -189,10 +196,12 @@ app.post("/scan/batch", async (req, res) => {
           } catch {
             await page.keyboard.press("Enter");
           }
-          await page.waitForLoadState("networkidle", { timeout: 15000 });
+          await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
+          await page.waitForTimeout(2000);
         }
 
-        await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.waitForTimeout(3000);
 
         const results = await new AxeBuilder({ page })
           .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
