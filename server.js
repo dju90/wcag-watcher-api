@@ -93,6 +93,10 @@ app.post("/scan", async (req, res) => {
     // Give JS-rendered content a moment to settle
     await page.waitForTimeout(3000);
 
+    // Capture screenshot as base64 for debugging
+    const screenshotBuffer = await page.screenshot({ fullPage: false });
+    const screenshot = screenshotBuffer.toString("base64");
+
     // Run axe-core scan targeting WCAG 2.1 A and AA
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
@@ -119,6 +123,7 @@ app.post("/scan", async (req, res) => {
       passes: results.passes.length,
       incomplete: results.incomplete.length,
       inapplicable: results.inapplicable.length,
+      screenshot,
     });
   } catch (err) {
     console.error(`Scan failed for ${url}:`, err.message);
@@ -203,6 +208,10 @@ app.post("/scan/batch", async (req, res) => {
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
         await page.waitForTimeout(3000);
 
+        // Capture screenshot as base64 for debugging
+        const screenshotBuffer = await page.screenshot({ fullPage: false });
+        const screenshot = screenshotBuffer.toString("base64");
+
         const results = await new AxeBuilder({ page })
           .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
           .analyze();
@@ -227,6 +236,7 @@ app.post("/scan/batch", async (req, res) => {
             violations,
             passes: results.passes.length,
             status: "done",
+            screenshot,
           }) + "\n"
         );
 
