@@ -4,7 +4,17 @@ const { chromium } = require("playwright");
 const { AxeBuilder } = require("@axe-core/playwright");
 
 const app = express();
-app.use(cors());
+app.use(
+  cors({
+    origin: true,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type"],
+  }),
+);
+
+// Explicit preflight handler as safety net
+app.options("*", cors());
+
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
@@ -330,6 +340,7 @@ app.post("/scan/batch", async (req, res) => {
   // can show progress as each URL completes
   res.setHeader("Content-Type", "application/x-ndjson");
   res.setHeader("Transfer-Encoding", "chunked");
+  res.setHeader("Access-Control-Allow-Origin", "*");
 
   let browser;
   try {
