@@ -36,7 +36,7 @@ app.post("/scan", async (req, res) => {
   try {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
-      viewport: { width: 1280, height: 900 },
+      viewport: { width: 1024, height: 728 },
       userAgent:
         "Mozilla/5.0 (A11yMonitor Scanner) AppleWebKit/537.36 Chrome/120.0.0.0",
     });
@@ -64,15 +64,16 @@ app.post("/scan", async (req, res) => {
             await fallback.fill(field.value);
           } catch {
             console.warn(
-              `Could not find field with label or placeholder: "${field.label}"`
+              `Could not find field with label or placeholder: "${field.label}"`,
             );
           }
         }
       }
 
       // Submit the form — try common patterns
-      const submitBtn =
-        page.getByRole("button", { name: /sign in|log in|submit/i });
+      const submitBtn = page.getByRole("button", {
+        name: /sign in|log in|submit/i,
+      });
       try {
         await submitBtn.waitFor({ timeout: 3000 });
         await submitBtn.click();
@@ -91,7 +92,7 @@ app.post("/scan", async (req, res) => {
     // never fully go idle due to analytics, websockets, etc.
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     // Give JS-rendered content a moment to settle
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(10000);
 
     // Capture screenshot as base64 for debugging
     const screenshotBuffer = await page.screenshot({ fullPage: false });
@@ -237,7 +238,7 @@ app.post("/scan/batch", async (req, res) => {
             passes: results.passes.length,
             status: "done",
             screenshot,
-          }) + "\n"
+          }) + "\n",
         );
 
         await context.close();
@@ -247,7 +248,7 @@ app.post("/scan/batch", async (req, res) => {
             url,
             status: "error",
             error: err.message,
-          }) + "\n"
+          }) + "\n",
         );
       } finally {
         activeScanCount--;
