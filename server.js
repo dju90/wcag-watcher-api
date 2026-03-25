@@ -92,7 +92,7 @@ app.post("/scan", async (req, res) => {
     // never fully go idle due to analytics, websockets, etc.
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     // Give JS-rendered content a moment to settle
-    await page.waitForTimeout(10000);
+    await page.waitForTimeout(20000);
 
     // Capture screenshot as base64 for debugging
     const screenshotBuffer = await page.screenshot({ fullPage: false });
