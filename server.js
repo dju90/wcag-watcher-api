@@ -9,7 +9,53 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "2", 10);
+const PAGE_SETTLE_TIMEOUT = parseInt(
+  process.env.PAGE_SETTLE_TIMEOUT || "15000",
+  10,
+);
 let activeScanCount = 0;
+
+// Waits for the page to be meaningfully rendered:
+// 1. Wait for 'load' event (all resources fetched)
+// 2. Wait until network has been quiet for 2s, or bail after timeout
+// 3. Wait until the DOM has stopped changing for 1s
+async function waitForPageReady(page, timeout = PAGE_SETTLE_TIMEOUT) {
+  // Step 1: wait for load event
+  await page.waitForLoadState("load", { timeout }).catch(() => {});
+
+  // Step 2: wait for network to settle (no requests for 2s)
+  await page
+    .waitForLoadState("networkidle", { timeout: Math.min(timeout, 10000) })
+    .catch(() => {});
+
+  // Step 3: wait for DOM to stabilize — poll until body content stops changing
+  await page.evaluate(
+    (maxWait) => {
+      return new Promise((resolve) => {
+        let lastHTML = "";
+        let stableCount = 0;
+        const interval = setInterval(() => {
+          const currentHTML = document.body?.innerHTML || "";
+          if (currentHTML === lastHTML) {
+            stableCount++;
+            if (stableCount >= 3) {
+              clearInterval(interval);
+              resolve();
+            }
+          } else {
+            stableCount = 0;
+            lastHTML = currentHTML;
+          }
+        }, 500);
+        setTimeout(() => {
+          clearInterval(interval);
+          resolve();
+        }, maxWait);
+      });
+    },
+    Math.min(timeout, 10000),
+  );
+}
 
 // Health check
 app.get("/health", (_req, res) => {
@@ -48,7 +94,7 @@ app.post("/scan", async (req, res) => {
         waitUntil: "domcontentloaded",
         timeout: 30000,
       });
-      await page.waitForTimeout(2000);
+      await waitForPageReady(page);
 
       for (const field of login.fields) {
         // Try to find the input by its associated label text
@@ -84,15 +130,12 @@ app.post("/scan", async (req, res) => {
 
       // Wait for navigation after login
       await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
-      await page.waitForTimeout(2000);
+      await waitForPageReady(page);
     }
 
-    // Navigate to the target URL
-    // Use domcontentloaded instead of networkidle — many modern sites
-    // never fully go idle due to analytics, websockets, etc.
+    // Navigate to the target URL and wait for content to render
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    // Give JS-rendered content a moment to settle
-    await page.waitForTimeout(20000);
+    await waitForPageReady(page);
 
     // Capture screenshot as base64 for debugging
     const screenshotBuffer = await page.screenshot({ fullPage: false });
@@ -175,7 +218,7 @@ app.post("/scan/batch", async (req, res) => {
             waitUntil: "domcontentloaded",
             timeout: 30000,
           });
-          await page.waitForTimeout(2000);
+          await waitForPageReady(page);
           for (const field of login.fields) {
             const input = page.getByLabel(field.label, { exact: false });
             try {
@@ -203,11 +246,11 @@ app.post("/scan/batch", async (req, res) => {
             await page.keyboard.press("Enter");
           }
           await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
-          await page.waitForTimeout(2000);
+          await waitForPageReady(page);
         }
 
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-        await page.waitForTimeout(3000);
+        await waitForPageReady(page);
 
         // Capture screenshot as base64 for debugging
         const screenshotBuffer = await page.screenshot({ fullPage: false });
