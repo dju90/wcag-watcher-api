@@ -97,35 +97,82 @@ app.post("/scan", async (req, res) => {
       await waitForPageReady(page);
 
       for (const field of login.fields) {
-        // Try to find the input by its associated label text
-        const input = page.getByLabel(field.label, { exact: false });
+        // Try to find the input by id or name first, then by label, then placeholder
+        let filled = false;
+
+        // Try by id
         try {
-          await input.waitFor({ timeout: 5000 });
-          await input.fill(field.value);
-        } catch {
-          // Fallback: try by placeholder
-          const fallback = page.getByPlaceholder(field.label, { exact: false });
+          const byId = page.locator(`#${field.label}`);
+          await byId.waitFor({ timeout: 3000 });
+          await byId.fill(field.value);
+          filled = true;
+        } catch {}
+
+        // Try by name attribute
+        if (!filled) {
           try {
-            await fallback.waitFor({ timeout: 3000 });
-            await fallback.fill(field.value);
-          } catch {
-            console.warn(
-              `Could not find field with label or placeholder: "${field.label}"`,
-            );
-          }
+            const byName = page.locator(`[name="${field.label}"]`);
+            await byName.waitFor({ timeout: 3000 });
+            await byName.fill(field.value);
+            filled = true;
+          } catch {}
+        }
+
+        // Try by associated label text
+        if (!filled) {
+          try {
+            const byLabel = page.getByLabel(field.label, { exact: false });
+            await byLabel.waitFor({ timeout: 3000 });
+            await byLabel.fill(field.value);
+            filled = true;
+          } catch {}
+        }
+
+        // Try by placeholder
+        if (!filled) {
+          try {
+            const byPlaceholder = page.getByPlaceholder(field.label, {
+              exact: false,
+            });
+            await byPlaceholder.waitFor({ timeout: 3000 });
+            await byPlaceholder.fill(field.value);
+            filled = true;
+          } catch {}
+        }
+
+        if (!filled) {
+          console.warn(`Could not find field: "${field.label}"`);
         }
       }
 
-      // Submit the form — try common patterns
-      const submitBtn = page.getByRole("button", {
-        name: /sign in|log in|submit/i,
-      });
-      try {
-        await submitBtn.waitFor({ timeout: 3000 });
-        await submitBtn.click();
-      } catch {
-        // Fallback: press Enter on the last field
-        await page.keyboard.press("Enter");
+      // Submit the form — use custom selector if provided, else try common patterns
+      if (login.submitSelector) {
+        const submitBtn = page.locator(`#${login.submitSelector}`);
+        try {
+          await submitBtn.waitFor({ timeout: 3000 });
+          await submitBtn.click();
+        } catch {
+          // Fallback: try as button name
+          const namedBtn = page.getByRole("button", {
+            name: new RegExp(login.submitSelector, "i"),
+          });
+          try {
+            await namedBtn.waitFor({ timeout: 3000 });
+            await namedBtn.click();
+          } catch {
+            await page.keyboard.press("Enter");
+          }
+        }
+      } else {
+        const submitBtn = page.getByRole("button", {
+          name: /sign in|log in|submit/i,
+        });
+        try {
+          await submitBtn.waitFor({ timeout: 3000 });
+          await submitBtn.click();
+        } catch {
+          await page.keyboard.press("Enter");
+        }
       }
 
       // Wait for navigation after login
@@ -306,30 +353,69 @@ app.post("/scan/batch", async (req, res) => {
           });
           await waitForPageReady(page);
           for (const field of login.fields) {
-            const input = page.getByLabel(field.label, { exact: false });
+            let filled = false;
             try {
-              await input.waitFor({ timeout: 5000 });
-              await input.fill(field.value);
-            } catch {
-              const fallback = page.getByPlaceholder(field.label, {
-                exact: false,
-              });
+              const byId = page.locator(`#${field.label}`);
+              await byId.waitFor({ timeout: 3000 });
+              await byId.fill(field.value);
+              filled = true;
+            } catch {}
+            if (!filled) {
               try {
-                await fallback.waitFor({ timeout: 3000 });
-                await fallback.fill(field.value);
-              } catch {
-                console.warn(`Could not find field: "${field.label}"`);
-              }
+                const byName = page.locator(`[name="${field.label}"]`);
+                await byName.waitFor({ timeout: 3000 });
+                await byName.fill(field.value);
+                filled = true;
+              } catch {}
+            }
+            if (!filled) {
+              try {
+                const byLabel = page.getByLabel(field.label, { exact: false });
+                await byLabel.waitFor({ timeout: 3000 });
+                await byLabel.fill(field.value);
+                filled = true;
+              } catch {}
+            }
+            if (!filled) {
+              try {
+                const byPlaceholder = page.getByPlaceholder(field.label, {
+                  exact: false,
+                });
+                await byPlaceholder.waitFor({ timeout: 3000 });
+                await byPlaceholder.fill(field.value);
+                filled = true;
+              } catch {}
+            }
+            if (!filled) {
+              console.warn(`Could not find field: "${field.label}"`);
             }
           }
-          const submitBtn = page.getByRole("button", {
-            name: /sign in|log in|submit/i,
-          });
-          try {
-            await submitBtn.waitFor({ timeout: 3000 });
-            await submitBtn.click();
-          } catch {
-            await page.keyboard.press("Enter");
+          if (login.submitSelector) {
+            const submitBtn = page.locator(`#${login.submitSelector}`);
+            try {
+              await submitBtn.waitFor({ timeout: 3000 });
+              await submitBtn.click();
+            } catch {
+              const namedBtn = page.getByRole("button", {
+                name: new RegExp(login.submitSelector, "i"),
+              });
+              try {
+                await namedBtn.waitFor({ timeout: 3000 });
+                await namedBtn.click();
+              } catch {
+                await page.keyboard.press("Enter");
+              }
+            }
+          } else {
+            const submitBtn = page.getByRole("button", {
+              name: /sign in|log in|submit/i,
+            });
+            try {
+              await submitBtn.waitFor({ timeout: 3000 });
+              await submitBtn.click();
+            } catch {
+              await page.keyboard.press("Enter");
+            }
           }
           await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
           await waitForPageReady(page);
