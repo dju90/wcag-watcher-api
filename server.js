@@ -194,74 +194,30 @@ app.post("/scan", async (req, res) => {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await waitForPageReady(page);
 
+    // Reveal hidden elements before scanning so axe-core can analyze them
+    await page.evaluate(() => {
+      document
+        .querySelectorAll("[aria-hidden=true], [hidden]")
+        .forEach((el) => {
+          el.removeAttribute("aria-hidden");
+          el.removeAttribute("hidden");
+        });
+      document.querySelectorAll("*").forEach((el) => {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none") el.style.display = "block";
+        if (style.visibility === "hidden") el.style.visibility = "visible";
+      });
+    });
+
     // Capture screenshot as base64 for debugging
     const screenshotBuffer = await page.screenshot({ fullPage: false });
     const screenshot = screenshotBuffer.toString("base64");
 
     // Run axe-core scan targeting WCAG 2.1 A and AA
-    // Include hidden elements in the scan and request incomplete results
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-      .options({
-        resultTypes: ["violations", "incomplete"],
-        runOnly: {
-          type: "tag",
-          values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
-        },
-        checks: {
-          "hidden-content": { enabled: false },
-        },
-      })
       .analyze();
 
-    // Also inject a secondary scan with includeHidden
-    // axe-core doesn't have a direct "includeHidden" flag, but we can
-    // override the default by scanning with all elements visible.
-    // Instead, run axe directly for full control over hidden elements:
-    const hiddenResults = await page.evaluate(() => {
-      return new Promise((resolve) => {
-        // Remove aria-hidden and hidden attributes temporarily for scanning
-        const hiddenEls = [];
-        document
-          .querySelectorAll("[aria-hidden=true], [hidden]")
-          .forEach((el) => {
-            hiddenEls.push({
-              el,
-              ariaHidden: el.getAttribute("aria-hidden"),
-              hidden: el.getAttribute("hidden"),
-            });
-            el.removeAttribute("aria-hidden");
-            el.removeAttribute("hidden");
-          });
-
-        // Also make display:none elements visible temporarily
-        const displayNoneEls = [];
-        document.querySelectorAll("*").forEach((el) => {
-          const style = window.getComputedStyle(el);
-          if (style.display === "none" || style.visibility === "hidden") {
-            displayNoneEls.push({
-              el,
-              display: el.style.display,
-              visibility: el.style.visibility,
-            });
-            if (style.display === "none") el.style.display = "block";
-            if (style.visibility === "hidden") el.style.visibility = "visible";
-          }
-        });
-
-        resolve({ unhiddenCount: hiddenEls.length + displayNoneEls.length });
-
-        // Note: we don't restore because we're about to run axe on
-        // the revealed state — the page context is discarded after scan
-      });
-    });
-
-    // Run a second axe scan now that hidden elements are revealed
-    const revealedResults = await new AxeBuilder({ page })
-      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-      .analyze();
-
-    // Merge: use revealed scan for violations, combine incomplete from both
     const shapeNodes = (nodes) =>
       nodes.map((n) => ({
         selector: n.target.join(" > "),
@@ -278,38 +234,16 @@ app.post("/scan", async (req, res) => {
       nodes: shapeNodes(v.nodes),
     });
 
-    // Deduplicate by ruleId, preferring the version with more nodes
-    const mergeByRule = (listA, listB) => {
-      const map = new Map();
-      for (const v of listA) map.set(v.id, v);
-      for (const v of listB) {
-        const existing = map.get(v.id);
-        if (!existing || v.nodes.length > existing.nodes.length) {
-          map.set(v.id, v);
-        }
-      }
-      return [...map.values()];
-    };
-
-    const mergedViolations = mergeByRule(
-      results.violations,
-      revealedResults.violations,
-    );
-    const mergedIncomplete = mergeByRule(
-      results.incomplete,
-      revealedResults.incomplete,
-    );
-
-    const violations = mergedViolations.map(shapeResults);
-    const incomplete = mergedIncomplete.map(shapeResults);
+    const violations = results.violations.map(shapeResults);
+    const incomplete = results.incomplete.map(shapeResults);
 
     res.json({
       url,
       timestamp: Date.now(),
       violations,
       incomplete,
-      passes: revealedResults.passes.length,
-      inapplicable: revealedResults.inapplicable.length,
+      passes: results.passes.length,
+      inapplicable: results.inapplicable.length,
       screenshot,
     });
   } catch (err) {
@@ -435,15 +369,7 @@ app.post("/scan/batch", async (req, res) => {
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
         await waitForPageReady(page);
 
-        // Capture screenshot as base64 for debugging
-        const screenshotBuffer = await page.screenshot({ fullPage: false });
-        const screenshot = screenshotBuffer.toString("base64");
-
-        const results = await new AxeBuilder({ page })
-          .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-          .analyze();
-
-        // Reveal hidden elements for a more thorough scan
+        // Reveal hidden elements before scanning
         await page.evaluate(() => {
           document
             .querySelectorAll("[aria-hidden=true], [hidden]")
@@ -458,7 +384,11 @@ app.post("/scan/batch", async (req, res) => {
           });
         });
 
-        const revealedResults = await new AxeBuilder({ page })
+        // Capture screenshot
+        const screenshotBuffer = await page.screenshot({ fullPage: false });
+        const screenshot = screenshotBuffer.toString("base64");
+
+        const results = await new AxeBuilder({ page })
           .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
           .analyze();
 
@@ -478,26 +408,8 @@ app.post("/scan/batch", async (req, res) => {
           nodes: shapeNodes(v.nodes),
         });
 
-        const mergeByRule = (listA, listB) => {
-          const map = new Map();
-          for (const v of listA) map.set(v.id, v);
-          for (const v of listB) {
-            const existing = map.get(v.id);
-            if (!existing || v.nodes.length > existing.nodes.length) {
-              map.set(v.id, v);
-            }
-          }
-          return [...map.values()];
-        };
-
-        const violations = mergeByRule(
-          results.violations,
-          revealedResults.violations,
-        ).map(shapeResults);
-        const incomplete = mergeByRule(
-          results.incomplete,
-          revealedResults.incomplete,
-        ).map(shapeResults);
+        const violations = results.violations.map(shapeResults);
+        const incomplete = results.incomplete.map(shapeResults);
 
         res.write(
           JSON.stringify({
@@ -505,7 +417,7 @@ app.post("/scan/batch", async (req, res) => {
             timestamp: Date.now(),
             violations,
             incomplete,
-            passes: revealedResults.passes.length,
+            passes: results.passes.length,
             status: "done",
             screenshot,
           }) + "\n",
