@@ -4,25 +4,20 @@ const { chromium } = require("playwright");
 const { AxeBuilder } = require("@axe-core/playwright");
 
 const app = express();
-app.use(
-  cors({
-    origin: true,
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type"],
-  }),
-);
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type"],
+}));
 
 // Explicit preflight handler as safety net
-app.options("*", cors());
+app.options("*", cors({ origin: "*" }));
 
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "2", 10);
-const PAGE_SETTLE_TIMEOUT = parseInt(
-  process.env.PAGE_SETTLE_TIMEOUT || "15000",
-  10,
-);
+const PAGE_SETTLE_TIMEOUT = parseInt(process.env.PAGE_SETTLE_TIMEOUT || "15000", 10);
 let activeScanCount = 0;
 
 // Waits for the page to be meaningfully rendered:
@@ -34,37 +29,26 @@ async function waitForPageReady(page, timeout = PAGE_SETTLE_TIMEOUT) {
   await page.waitForLoadState("load", { timeout }).catch(() => {});
 
   // Step 2: wait for network to settle (no requests for 2s)
-  await page
-    .waitForLoadState("networkidle", { timeout: Math.min(timeout, 10000) })
-    .catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: Math.min(timeout, 10000) }).catch(() => {});
 
   // Step 3: wait for DOM to stabilize — poll until body content stops changing
-  await page.evaluate(
-    (maxWait) => {
-      return new Promise((resolve) => {
-        let lastHTML = "";
-        let stableCount = 0;
-        const interval = setInterval(() => {
-          const currentHTML = document.body?.innerHTML || "";
-          if (currentHTML === lastHTML) {
-            stableCount++;
-            if (stableCount >= 3) {
-              clearInterval(interval);
-              resolve();
-            }
-          } else {
-            stableCount = 0;
-            lastHTML = currentHTML;
-          }
-        }, 500);
-        setTimeout(() => {
-          clearInterval(interval);
-          resolve();
-        }, maxWait);
-      });
-    },
-    Math.min(timeout, 10000),
-  );
+  await page.evaluate((maxWait) => {
+    return new Promise((resolve) => {
+      let lastHTML = "";
+      let stableCount = 0;
+      const interval = setInterval(() => {
+        const currentHTML = document.body?.innerHTML || "";
+        if (currentHTML === lastHTML) {
+          stableCount++;
+          if (stableCount >= 3) { clearInterval(interval); resolve(); }
+        } else {
+          stableCount = 0;
+          lastHTML = currentHTML;
+        }
+      }, 500);
+      setTimeout(() => { clearInterval(interval); resolve(); }, maxWait);
+    });
+  }, Math.min(timeout, 10000));
 }
 
 // Health check
@@ -141,9 +125,7 @@ app.post("/scan", async (req, res) => {
         // Try by placeholder
         if (!filled) {
           try {
-            const byPlaceholder = page.getByPlaceholder(field.label, {
-              exact: false,
-            });
+            const byPlaceholder = page.getByPlaceholder(field.label, { exact: false });
             await byPlaceholder.waitFor({ timeout: 3000 });
             await byPlaceholder.fill(field.value);
             filled = true;
@@ -163,9 +145,7 @@ app.post("/scan", async (req, res) => {
           await submitBtn.click();
         } catch {
           // Fallback: try as button name
-          const namedBtn = page.getByRole("button", {
-            name: new RegExp(login.submitSelector, "i"),
-          });
+          const namedBtn = page.getByRole("button", { name: new RegExp(login.submitSelector, "i") });
           try {
             await namedBtn.waitFor({ timeout: 3000 });
             await namedBtn.click();
@@ -174,9 +154,7 @@ app.post("/scan", async (req, res) => {
           }
         }
       } else {
-        const submitBtn = page.getByRole("button", {
-          name: /sign in|log in|submit/i,
-        });
+        const submitBtn = page.getByRole("button", { name: /sign in|log in|submit/i });
         try {
           await submitBtn.waitFor({ timeout: 3000 });
           await submitBtn.click();
@@ -196,12 +174,10 @@ app.post("/scan", async (req, res) => {
 
     // Reveal hidden elements before scanning so axe-core can analyze them
     await page.evaluate(() => {
-      document
-        .querySelectorAll("[aria-hidden=true], [hidden]")
-        .forEach((el) => {
-          el.removeAttribute("aria-hidden");
-          el.removeAttribute("hidden");
-        });
+      document.querySelectorAll("[aria-hidden=true], [hidden]").forEach((el) => {
+        el.removeAttribute("aria-hidden");
+        el.removeAttribute("hidden");
+      });
       document.querySelectorAll("*").forEach((el) => {
         const style = window.getComputedStyle(el);
         if (style.display === "none") el.style.display = "block";
@@ -323,9 +299,7 @@ app.post("/scan/batch", async (req, res) => {
             }
             if (!filled) {
               try {
-                const byPlaceholder = page.getByPlaceholder(field.label, {
-                  exact: false,
-                });
+                const byPlaceholder = page.getByPlaceholder(field.label, { exact: false });
                 await byPlaceholder.waitFor({ timeout: 3000 });
                 await byPlaceholder.fill(field.value);
                 filled = true;
@@ -341,9 +315,7 @@ app.post("/scan/batch", async (req, res) => {
               await submitBtn.waitFor({ timeout: 3000 });
               await submitBtn.click();
             } catch {
-              const namedBtn = page.getByRole("button", {
-                name: new RegExp(login.submitSelector, "i"),
-              });
+              const namedBtn = page.getByRole("button", { name: new RegExp(login.submitSelector, "i") });
               try {
                 await namedBtn.waitFor({ timeout: 3000 });
                 await namedBtn.click();
@@ -371,12 +343,10 @@ app.post("/scan/batch", async (req, res) => {
 
         // Reveal hidden elements before scanning
         await page.evaluate(() => {
-          document
-            .querySelectorAll("[aria-hidden=true], [hidden]")
-            .forEach((el) => {
-              el.removeAttribute("aria-hidden");
-              el.removeAttribute("hidden");
-            });
+          document.querySelectorAll("[aria-hidden=true], [hidden]").forEach((el) => {
+            el.removeAttribute("aria-hidden");
+            el.removeAttribute("hidden");
+          });
           document.querySelectorAll("*").forEach((el) => {
             const style = window.getComputedStyle(el);
             if (style.display === "none") el.style.display = "block";
@@ -420,7 +390,7 @@ app.post("/scan/batch", async (req, res) => {
             passes: results.passes.length,
             status: "done",
             screenshot,
-          }) + "\n",
+          }) + "\n"
         );
 
         await context.close();
@@ -430,7 +400,7 @@ app.post("/scan/batch", async (req, res) => {
             url,
             status: "error",
             error: err.message,
-          }) + "\n",
+          }) + "\n"
         );
       } finally {
         activeScanCount--;
