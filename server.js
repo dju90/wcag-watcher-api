@@ -18,7 +18,7 @@ app.options("*", cors({ origin: "*" }));
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
-const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "2", 10);
+const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "1", 10);
 const PAGE_SETTLE_TIMEOUT = parseInt(
   process.env.PAGE_SETTLE_TIMEOUT || "15000",
   10,
@@ -90,7 +90,16 @@ app.post("/scan", async (req, res) => {
   let browser;
 
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-extensions",
+        "--no-sandbox",
+        "--js-flags=--max-old-space-size=256",
+      ],
+    });
     const context = await browser.newContext({
       viewport: { width: 1024, height: 728 },
       userAgent:
@@ -194,7 +203,8 @@ app.post("/scan", async (req, res) => {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await waitForPageReady(page);
 
-    // Reveal hidden elements before scanning so axe-core can analyze them
+    // Reveal hidden elements before scanning — only strip aria-hidden
+    // and hidden attributes (skip display:none to save memory on large DOMs)
     await page.evaluate(() => {
       document
         .querySelectorAll("[aria-hidden=true], [hidden]")
@@ -202,11 +212,6 @@ app.post("/scan", async (req, res) => {
           el.removeAttribute("aria-hidden");
           el.removeAttribute("hidden");
         });
-      document.querySelectorAll("*").forEach((el) => {
-        const style = window.getComputedStyle(el);
-        if (style.display === "none") el.style.display = "block";
-        if (style.visibility === "hidden") el.style.visibility = "visible";
-      });
     });
 
     // Run axe-core scan targeting WCAG 2.1 A and AA
@@ -273,7 +278,16 @@ app.post("/scan/batch", async (req, res) => {
 
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-extensions",
+        "--no-sandbox",
+        "--js-flags=--max-old-space-size=256",
+      ],
+    });
 
     for (const entry of urls) {
       const { url, login } = typeof entry === "string" ? { url: entry } : entry;
@@ -372,11 +386,6 @@ app.post("/scan/batch", async (req, res) => {
               el.removeAttribute("aria-hidden");
               el.removeAttribute("hidden");
             });
-          document.querySelectorAll("*").forEach((el) => {
-            const style = window.getComputedStyle(el);
-            if (style.display === "none") el.style.display = "block";
-            if (style.visibility === "hidden") el.style.visibility = "visible";
-          });
         });
 
         const results = await new AxeBuilder({ page })
