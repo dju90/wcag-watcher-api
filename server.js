@@ -11,10 +11,7 @@ app.use(
     allowedHeaders: ["Content-Type"],
   }),
 );
-
-// Explicit preflight handler as safety net
 app.options("*", cors({ origin: "*" }));
-
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
@@ -25,20 +22,23 @@ const PAGE_SETTLE_TIMEOUT = parseInt(
 );
 let activeScanCount = 0;
 
-// Waits for the page to be meaningfully rendered:
-// 1. Wait for 'load' event (all resources fetched)
-// 2. Wait until network has been quiet for 2s, or bail after timeout
-// 3. Wait until the DOM has stopped changing for 1s
-async function waitForPageReady(page, timeout = PAGE_SETTLE_TIMEOUT) {
-  // Step 1: wait for load event
-  await page.waitForLoadState("load", { timeout }).catch(() => {});
+const BROWSER_ARGS = [
+  "--disable-gpu",
+  "--disable-dev-shm-usage",
+  "--disable-extensions",
+  "--no-sandbox",
+  "--js-flags=--max-old-space-size=256",
+];
 
-  // Step 2: wait for network to settle (no requests for 2s)
+const VIEWPORT = { width: 1024, height: 728 };
+
+// Wait for page to be reasonably ready
+async function waitForPageReady(page, timeout = PAGE_SETTLE_TIMEOUT) {
+  await page.waitForLoadState("load", { timeout }).catch(() => {});
   await page
     .waitForLoadState("networkidle", { timeout: Math.min(timeout, 10000) })
     .catch(() => {});
-
-  // Step 3: wait for DOM to stabilize — poll until body content stops changing
+  // Wait for DOM to stabilize
   await page.evaluate(
     (maxWait) => {
       return new Promise((resolve) => {
@@ -67,144 +67,135 @@ async function waitForPageReady(page, timeout = PAGE_SETTLE_TIMEOUT) {
   );
 }
 
-// Health check
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", activeScans: activeScanCount });
-});
-
-// Main scan endpoint
-app.post("/scan", async (req, res) => {
-  const { url, login } = req.body;
-
-  if (!url) {
-    return res.status(400).json({ error: "url is required" });
-  }
-
-  if (activeScanCount >= MAX_CONCURRENT) {
-    return res.status(429).json({
-      error: "Too many scans in progress. Try again shortly.",
-    });
-  }
-
-  activeScanCount++;
-  let browser;
+// Perform login and return session cookies, then close the login context
+async function getAuthCookies(browser, login) {
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  const page = await context.newPage();
 
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--no-sandbox",
-        "--js-flags=--max-old-space-size=256",
-      ],
+    await page.goto(login.loginUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
     });
-    const context = await browser.newContext({
-      viewport: { width: 1024, height: 728 },
-      userAgent:
-        "Mozilla/5.0 (A11yMonitor Scanner) AppleWebKit/537.36 Chrome/120.0.0.0",
-    });
-    const page = await context.newPage();
+    await waitForPageReady(page);
 
-    // Handle login if configured
-    if (login?.loginUrl && login.fields?.length > 0) {
-      await page.goto(login.loginUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: 30000,
-      });
-      await waitForPageReady(page);
-
-      for (const field of login.fields) {
-        // Try to find the input by id or name first, then by label, then placeholder
-        let filled = false;
-
-        // Try by id
+    // Fill in login fields
+    for (const field of login.fields) {
+      let filled = false;
+      // Try by id
+      if (!filled) {
         try {
-          const byId = page.locator(`#${field.label}`);
-          await byId.waitFor({ timeout: 3000 });
-          await byId.fill(field.value);
+          const el = page.locator(`#${field.label}`);
+          await el.waitFor({ timeout: 3000 });
+          await el.fill(field.value);
           filled = true;
         } catch {}
-
-        // Try by name attribute
-        if (!filled) {
-          try {
-            const byName = page.locator(`[name="${field.label}"]`);
-            await byName.waitFor({ timeout: 3000 });
-            await byName.fill(field.value);
-            filled = true;
-          } catch {}
-        }
-
-        // Try by associated label text
-        if (!filled) {
-          try {
-            const byLabel = page.getByLabel(field.label, { exact: false });
-            await byLabel.waitFor({ timeout: 3000 });
-            await byLabel.fill(field.value);
-            filled = true;
-          } catch {}
-        }
-
-        // Try by placeholder
-        if (!filled) {
-          try {
-            const byPlaceholder = page.getByPlaceholder(field.label, {
-              exact: false,
-            });
-            await byPlaceholder.waitFor({ timeout: 3000 });
-            await byPlaceholder.fill(field.value);
-            filled = true;
-          } catch {}
-        }
-
-        if (!filled) {
-          console.warn(`Could not find field: "${field.label}"`);
-        }
       }
-
-      // Submit the form — use custom selector if provided, else try common patterns
-      if (login.submitSelector) {
-        const submitBtn = page.locator(`#${login.submitSelector}`);
+      // Try by name
+      if (!filled) {
         try {
-          await submitBtn.waitFor({ timeout: 3000 });
-          await submitBtn.click();
-        } catch {
-          // Fallback: try as button name
-          const namedBtn = page.getByRole("button", {
-            name: new RegExp(login.submitSelector, "i"),
-          });
-          try {
-            await namedBtn.waitFor({ timeout: 3000 });
-            await namedBtn.click();
-          } catch {
-            await page.keyboard.press("Enter");
-          }
-        }
-      } else {
-        const submitBtn = page.getByRole("button", {
-          name: /sign in|log in|submit/i,
+          const el = page.locator(`[name="${field.label}"]`);
+          await el.waitFor({ timeout: 3000 });
+          await el.fill(field.value);
+          filled = true;
+        } catch {}
+      }
+      // Try by label text
+      if (!filled) {
+        try {
+          const el = page.getByLabel(field.label, { exact: false });
+          await el.waitFor({ timeout: 3000 });
+          await el.fill(field.value);
+          filled = true;
+        } catch {}
+      }
+      // Try by placeholder
+      if (!filled) {
+        try {
+          const el = page.getByPlaceholder(field.label, { exact: false });
+          await el.waitFor({ timeout: 3000 });
+          await el.fill(field.value);
+          filled = true;
+        } catch {}
+      }
+      if (!filled) {
+        console.warn(`Could not find field: "${field.label}"`);
+      }
+    }
+
+    // Submit the form
+    if (login.submitSelector) {
+      const submitBtn = page.locator(`#${login.submitSelector}`);
+      try {
+        await submitBtn.waitFor({ timeout: 3000 });
+        await submitBtn.click();
+      } catch {
+        const namedBtn = page.getByRole("button", {
+          name: new RegExp(login.submitSelector, "i"),
         });
         try {
-          await submitBtn.waitFor({ timeout: 3000 });
-          await submitBtn.click();
+          await namedBtn.waitFor({ timeout: 3000 });
+          await namedBtn.click();
         } catch {
           await page.keyboard.press("Enter");
         }
       }
-
-      // Wait for navigation after login
-      await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
-      await waitForPageReady(page);
+    } else {
+      const submitBtn = page.getByRole("button", {
+        name: /sign in|log in|submit/i,
+      });
+      try {
+        await submitBtn.waitFor({ timeout: 3000 });
+        await submitBtn.click();
+      } catch {
+        await page.keyboard.press("Enter");
+      }
     }
 
-    // Navigate to the target URL and wait for content to render
+    // Wait for login to complete
+    await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
+    await waitForPageReady(page);
+
+    // Capture cookies
+    const cookies = await context.cookies();
+    return cookies;
+  } finally {
+    // Always close the login context to free memory
+    await context.close();
+  }
+}
+
+const shapeNodes = (nodes) =>
+  nodes.map((n) => ({
+    selector: n.target.join(" > "),
+    html: n.html,
+    failureSummary: n.failureSummary,
+  }));
+
+const shapeResults = (v) => ({
+  ruleId: v.id,
+  impact: v.impact,
+  desc: v.description,
+  help: v.helpUrl,
+  tags: v.tags,
+  nodes: shapeNodes(v.nodes),
+});
+
+// Scan a single page in its own context, with optional pre-set cookies
+async function scanPage(browser, url, cookies) {
+  const context = await browser.newContext({ viewport: VIEWPORT });
+
+  if (cookies && cookies.length > 0) {
+    await context.addCookies(cookies);
+  }
+
+  const page = await context.newPage();
+
+  try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await waitForPageReady(page);
 
-    // Reveal hidden elements before scanning — only strip aria-hidden
-    // and hidden attributes (skip display:none to save memory on large DOMs)
+    // Reveal hidden elements
     await page.evaluate(() => {
       document
         .querySelectorAll("[aria-hidden=true], [hidden]")
@@ -214,51 +205,70 @@ app.post("/scan", async (req, res) => {
         });
     });
 
-    // Run axe-core scan targeting WCAG 2.1 A and AA
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
       .analyze();
 
-    const shapeNodes = (nodes) =>
-      nodes.map((n) => ({
-        selector: n.target.join(" > "),
-        html: n.html,
-        failureSummary: n.failureSummary,
-      }));
-
-    const shapeResults = (v) => ({
-      ruleId: v.id,
-      impact: v.impact,
-      desc: v.description,
-      help: v.helpUrl,
-      tags: v.tags,
-      nodes: shapeNodes(v.nodes),
-    });
-
     const violations = results.violations.map(shapeResults);
     const incomplete = results.incomplete.map(shapeResults);
 
-    res.json({
+    return {
       url,
       timestamp: Date.now(),
       violations,
       incomplete,
       passes: results.passes.length,
-      inapplicable: results.inapplicable.length,
-    });
+      status: "done",
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+// Health check
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", activeScans: activeScanCount });
+});
+
+// Single scan endpoint
+app.post("/scan", async (req, res) => {
+  const { url, login } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: "url is required" });
+  }
+
+  if (activeScanCount >= MAX_CONCURRENT) {
+    return res
+      .status(429)
+      .json({ error: "Too many scans in progress. Try again shortly." });
+  }
+
+  activeScanCount++;
+  let browser;
+
+  try {
+    browser = await chromium.launch({ headless: true, args: BROWSER_ARGS });
+
+    // If login is configured, authenticate and get cookies first
+    let cookies = null;
+    if (login?.loginUrl && login.fields?.length > 0) {
+      cookies = await getAuthCookies(browser, login);
+    }
+
+    // Scan the target page in a fresh context
+    const result = await scanPage(browser, url, cookies);
+    res.json(result);
   } catch (err) {
     console.error(`Scan failed for ${url}:`, err.message);
-    res.status(500).json({
-      error: "Scan failed",
-      message: err.message,
-    });
+    res.status(500).json({ error: "Scan failed", message: err.message });
   } finally {
     if (browser) await browser.close();
     activeScanCount--;
   }
 });
 
-// Batch scan endpoint — scans multiple URLs sequentially
+// Batch scan endpoint
 app.post("/scan/batch", async (req, res) => {
   const { urls } = req.body;
 
@@ -270,166 +280,41 @@ app.post("/scan/batch", async (req, res) => {
     return res.status(400).json({ error: "Maximum 20 URLs per batch" });
   }
 
-  // Stream results back as newline-delimited JSON so the frontend
-  // can show progress as each URL completes
   res.setHeader("Content-Type", "application/x-ndjson");
   res.setHeader("Transfer-Encoding", "chunked");
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--no-sandbox",
-        "--js-flags=--max-old-space-size=256",
-      ],
-    });
+    browser = await chromium.launch({ headless: true, args: BROWSER_ARGS });
+
+    // Group URLs by login config so we only authenticate once per set of credentials
+    const loginCache = new Map();
 
     for (const entry of urls) {
       const { url, login } = typeof entry === "string" ? { url: entry } : entry;
       activeScanCount++;
 
       try {
-        const context = await browser.newContext({
-          viewport: { width: 1024, height: 728 },
-        });
-        const page = await context.newPage();
-
-        // Handle login if configured
+        // Get or cache cookies for this login config
+        let cookies = null;
         if (login?.loginUrl && login.fields?.length > 0) {
-          await page.goto(login.loginUrl, {
-            waitUntil: "domcontentloaded",
-            timeout: 30000,
-          });
-          await waitForPageReady(page);
-          for (const field of login.fields) {
-            let filled = false;
-            try {
-              const byId = page.locator(`#${field.label}`);
-              await byId.waitFor({ timeout: 3000 });
-              await byId.fill(field.value);
-              filled = true;
-            } catch {}
-            if (!filled) {
-              try {
-                const byName = page.locator(`[name="${field.label}"]`);
-                await byName.waitFor({ timeout: 3000 });
-                await byName.fill(field.value);
-                filled = true;
-              } catch {}
-            }
-            if (!filled) {
-              try {
-                const byLabel = page.getByLabel(field.label, { exact: false });
-                await byLabel.waitFor({ timeout: 3000 });
-                await byLabel.fill(field.value);
-                filled = true;
-              } catch {}
-            }
-            if (!filled) {
-              try {
-                const byPlaceholder = page.getByPlaceholder(field.label, {
-                  exact: false,
-                });
-                await byPlaceholder.waitFor({ timeout: 3000 });
-                await byPlaceholder.fill(field.value);
-                filled = true;
-              } catch {}
-            }
-            if (!filled) {
-              console.warn(`Could not find field: "${field.label}"`);
-            }
-          }
-          if (login.submitSelector) {
-            const submitBtn = page.locator(`#${login.submitSelector}`);
-            try {
-              await submitBtn.waitFor({ timeout: 3000 });
-              await submitBtn.click();
-            } catch {
-              const namedBtn = page.getByRole("button", {
-                name: new RegExp(login.submitSelector, "i"),
-              });
-              try {
-                await namedBtn.waitFor({ timeout: 3000 });
-                await namedBtn.click();
-              } catch {
-                await page.keyboard.press("Enter");
-              }
-            }
+          const loginKey = JSON.stringify(login);
+          if (loginCache.has(loginKey)) {
+            cookies = loginCache.get(loginKey);
           } else {
-            const submitBtn = page.getByRole("button", {
-              name: /sign in|log in|submit/i,
-            });
-            try {
-              await submitBtn.waitFor({ timeout: 3000 });
-              await submitBtn.click();
-            } catch {
-              await page.keyboard.press("Enter");
-            }
+            cookies = await getAuthCookies(browser, login);
+            loginCache.set(loginKey, cookies);
           }
-          await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
-          await waitForPageReady(page);
         }
 
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-        await waitForPageReady(page);
+        // Scan in a fresh context (login context is already closed)
+        const result = await scanPage(browser, url, cookies);
 
-        // Reveal hidden elements before scanning
-        await page.evaluate(() => {
-          document
-            .querySelectorAll("[aria-hidden=true], [hidden]")
-            .forEach((el) => {
-              el.removeAttribute("aria-hidden");
-              el.removeAttribute("hidden");
-            });
-        });
-
-        const results = await new AxeBuilder({ page })
-          .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-          .analyze();
-
-        const shapeNodes = (nodes) =>
-          nodes.map((n) => ({
-            selector: n.target.join(" > "),
-            html: n.html,
-            failureSummary: n.failureSummary,
-          }));
-
-        const shapeResults = (v) => ({
-          ruleId: v.id,
-          impact: v.impact,
-          desc: v.description,
-          help: v.helpUrl,
-          tags: v.tags,
-          nodes: shapeNodes(v.nodes),
-        });
-
-        const violations = results.violations.map(shapeResults);
-        const incomplete = results.incomplete.map(shapeResults);
-
-        res.write(
-          JSON.stringify({
-            url,
-            timestamp: Date.now(),
-            violations,
-            incomplete,
-            passes: results.passes.length,
-            status: "done",
-          }) + "\n",
-        );
-
-        await context.close();
+        res.write(JSON.stringify(result) + "\n");
       } catch (err) {
         res.write(
-          JSON.stringify({
-            url,
-            status: "error",
-            error: err.message,
-          }) + "\n",
+          JSON.stringify({ url, status: "error", error: err.message }) + "\n",
         );
       } finally {
         activeScanCount--;
