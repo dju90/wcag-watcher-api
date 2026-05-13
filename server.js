@@ -2,6 +2,8 @@ const express = require("express");
 const cors = require("cors");
 const { chromium } = require("playwright");
 const { AxeBuilder } = require("@axe-core/playwright");
+const { runHtmlCs } = require("./htmlcs");
+const { runAce } = require("./ibm-ace");
 
 const app = express();
 app.use(
@@ -181,6 +183,89 @@ const shapeResults = (v) => ({
   nodes: shapeNodes(v.nodes),
 });
 
+// Element identity for cross-engine matching. Using outerHTML (truncated to
+// the same length both engines emit) so the same DOM node lands in the same
+// bucket even though axe and HtmlCS compute selectors differently.
+const elementKey = (html) => (html || "").slice(0, 1000) || null;
+
+// Merge findings from all engines by element. Output buckets:
+//   corroborated: element flagged by 2+ engines (higher confidence)
+//   axeOnly / htmlcsOnly / aceOnly: flagged by exactly one engine
+// Each entry carries `engines: [...]` listing which engines flagged it.
+// Advisory-only findings (HtmlCS "notice", ace "recommendation"/"manual") are
+// excluded from reconciliation — they aren't failures, just suggestions.
+function reconcile(axeViolations, htmlcsIssues, aceIssues) {
+  const byElement = new Map();
+
+  const bucketFor = (key, seed) => {
+    let b = byElement.get(key);
+    if (!b) {
+      b = {
+        selector: seed.selector || null,
+        html: seed.html,
+        engines: [],
+        axe: [],
+        htmlcs: [],
+        ace: [],
+      };
+      byElement.set(key, b);
+    }
+    return b;
+  };
+
+  for (const v of axeViolations) {
+    for (const node of v.nodes) {
+      const key = elementKey(node.html);
+      if (!key) continue;
+      bucketFor(key, node).axe.push({
+        ruleId: v.ruleId,
+        impact: v.impact,
+        desc: v.desc,
+        help: v.help,
+        failureSummary: node.failureSummary,
+      });
+    }
+  }
+
+  for (const i of htmlcsIssues) {
+    if (i.type === "notice") continue;
+    const key = elementKey(i.html);
+    if (!key) continue;
+    bucketFor(key, i).htmlcs.push({
+      code: i.code,
+      type: i.type,
+      msg: i.msg,
+    });
+  }
+
+  for (const i of aceIssues) {
+    // Only count actual failures + potential failures in reconciliation.
+    if (i.level !== "violation" && i.level !== "potentialviolation") continue;
+    const key = elementKey(i.html);
+    if (!key) continue;
+    bucketFor(key, { selector: null, html: i.html }).ace.push({
+      ruleId: i.ruleId,
+      level: i.level,
+      message: i.message,
+    });
+  }
+
+  const corroborated = [];
+  const axeOnly = [];
+  const htmlcsOnly = [];
+  const aceOnly = [];
+  for (const b of byElement.values()) {
+    if (b.axe.length) b.engines.push("axe");
+    if (b.htmlcs.length) b.engines.push("htmlcs");
+    if (b.ace.length) b.engines.push("ace");
+    if (b.engines.length >= 2) corroborated.push(b);
+    else if (b.engines[0] === "axe") axeOnly.push(b);
+    else if (b.engines[0] === "htmlcs") htmlcsOnly.push(b);
+    else if (b.engines[0] === "ace") aceOnly.push(b);
+  }
+  return { corroborated, axeOnly, htmlcsOnly, aceOnly };
+}
+
 // Scan a single page in its own context, with optional pre-set cookies
 async function scanPage(browser, url, cookies) {
   const context = await browser.newContext({ viewport: VIEWPORT });
@@ -206,17 +291,42 @@ async function scanPage(browser, url, cookies) {
     });
 
     const results = await new AxeBuilder({ page })
-      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .withTags(["wcag21a", "wcag21aa", "best-practice"])
       .analyze();
 
     const violations = results.violations.map(shapeResults);
     const incomplete = results.incomplete.map(shapeResults);
+
+    // Additional engines injected into the same page. Each is best-effort —
+    // a failure in one doesn't sink the others or the axe results.
+    let htmlcsIssues = [];
+    let htmlcsError = null;
+    try {
+      htmlcsIssues = await runHtmlCs(page);
+    } catch (err) {
+      htmlcsError = err.message;
+    }
+
+    let aceIssues = [];
+    let aceError = null;
+    try {
+      aceIssues = await runAce(page);
+    } catch (err) {
+      aceError = err.message;
+    }
+
+    const reconciled = reconcile(violations, htmlcsIssues, aceIssues);
 
     return {
       url,
       timestamp: Date.now(),
       violations,
       incomplete,
+      htmlcs: htmlcsIssues,
+      htmlcsError,
+      ace: aceIssues,
+      aceError,
+      reconciled,
       passes: results.passes.length,
       status: "done",
     };

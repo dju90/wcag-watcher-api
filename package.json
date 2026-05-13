@@ -9,8 +9,10 @@
   },
   "dependencies": {
     "@axe-core/playwright": "^4.9.0",
+    "accessibility-checker-engine": "^4.0.17",
     "cors": "^2.8.5",
     "express": "^4.18.2",
+    "html_codesniffer": "^2.5.1",
     "playwright": "1.58.2"
   }
 }
