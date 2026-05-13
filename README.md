@@ -76,6 +76,10 @@ violations, or `status: "error"` with an error message.
 Environment variables (optional):
 - `PORT` — defaults to 3001 (Render sets this automatically)
 - `MAX_CONCURRENT` — max simultaneous scans, defaults to 2
+- `NAVIGATION_TIMEOUT` — max time in milliseconds to wait for page
+  navigation, defaults to 90000
+- `PAGE_SETTLE_TIMEOUT` — max time in milliseconds to wait for the page to
+  settle after navigation, defaults to 15000
 
 ## Notes
 

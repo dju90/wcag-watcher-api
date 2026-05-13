@@ -16,6 +16,10 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "1", 10);
+const NAVIGATION_TIMEOUT = parseInt(
+  process.env.NAVIGATION_TIMEOUT || "90000",
+  10,
+);
 const PAGE_SETTLE_TIMEOUT = parseInt(
   process.env.PAGE_SETTLE_TIMEOUT || "15000",
   10,
@@ -119,7 +123,7 @@ async function getAuthCookies(browser, login) {
   try {
     await page.goto(login.loginUrl, {
       waitUntil: "domcontentloaded",
-      timeout: 30000,
+      timeout: NAVIGATION_TIMEOUT,
     });
     await waitForPageReady(page);
 
@@ -241,7 +245,10 @@ async function scanPage(browser, url, cookies, wcagLevel = DEFAULT_WCAG_LEVEL) {
   const page = await context.newPage();
 
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: NAVIGATION_TIMEOUT,
+    });
     await waitForPageReady(page);
 
     // Reveal hidden elements
