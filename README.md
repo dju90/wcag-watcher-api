@@ -1,6 +1,6 @@
 # A11y Scanner API
 
-Lightweight API that scans web pages for WCAG 2.1 A/AA accessibility violations
+Lightweight API that scans web pages for WCAG accessibility violations
 using Playwright (headless Chromium) and axe-core.
 
 ## Local Development
@@ -24,6 +24,7 @@ Scan a single URL.
 ```json
 {
   "url": "https://example.com/dashboard",
+  "wcagLevel": "wcag21aa",
   "login": {
     "loginUrl": "https://example.com/login",
     "fields": [
@@ -34,7 +35,8 @@ Scan a single URL.
 }
 ```
 
-The `login` field is optional. When provided, the scanner will:
+The `wcagLevel` field is optional and defaults to `wcag21aa`. The `login`
+field is optional. When provided, the scanner will:
 1. Navigate to `loginUrl`
 2. Find each form field by its label text (falls back to placeholder)
 3. Click the submit/sign-in button (falls back to pressing Enter)
@@ -46,6 +48,7 @@ can show progress as each URL completes.
 
 ```json
 {
+  "wcagLevel": "wcag21aa",
   "urls": [
     { "url": "https://example.com/page1" },
     { "url": "https://example.com/page2", "login": { "..." } },
@@ -53,6 +56,10 @@ can show progress as each URL completes.
   ]
 }
 ```
+
+`wcagLevel` is optional and defaults to `wcag21aa`. Supported values are
+`wcag2a`, `wcag2aa`, `wcag2aaa`, `wcag21a`, `wcag21aa`, `wcag21aaa`,
+`wcag22a`, `wcag22aa`, and `wcag22aaa`.
 
 Each line in the response is a JSON object with either `status: "done"` and
 violations, or `status: "error"` with an error message.
@@ -69,6 +76,10 @@ violations, or `status: "error"` with an error message.
 Environment variables (optional):
 - `PORT` — defaults to 3001 (Render sets this automatically)
 - `MAX_CONCURRENT` — max simultaneous scans, defaults to 2
+- `NAVIGATION_TIMEOUT` — max time in milliseconds to wait for page
+  navigation, defaults to 90000
+- `PAGE_SETTLE_TIMEOUT` — max time in milliseconds to wait for the page to
+  settle after navigation, defaults to 15000
 
 ## Notes
 

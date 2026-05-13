@@ -18,13 +18,21 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "1", 10);
+const NAVIGATION_TIMEOUT = parseInt(
+  process.env.NAVIGATION_TIMEOUT || "90000",
+  10,
+);
 const PAGE_SETTLE_TIMEOUT = parseInt(
   process.env.PAGE_SETTLE_TIMEOUT || "15000",
   10,
 );
 let activeScanCount = 0;
 
+const ENGLISH_LOCALE = "en-US";
+const ACCEPT_LANGUAGE = "en-US,en;q=0.9";
+
 const BROWSER_ARGS = [
+  `--lang=${ENGLISH_LOCALE}`,
   "--disable-gpu",
   "--disable-dev-shm-usage",
   "--disable-extensions",
@@ -33,6 +41,46 @@ const BROWSER_ARGS = [
 ];
 
 const VIEWPORT = { width: 1024, height: 728 };
+const BROWSER_CONTEXT_OPTIONS = {
+  viewport: VIEWPORT,
+  locale: ENGLISH_LOCALE,
+  extraHTTPHeaders: {
+    "Accept-Language": ACCEPT_LANGUAGE,
+  },
+};
+const DEFAULT_WCAG_LEVEL = "wcag21aa";
+const WCAG_LEVEL_TAGS = {
+  wcag2a: ["wcag2a"],
+  wcag2aa: ["wcag2a", "wcag2aa"],
+  wcag2aaa: ["wcag2a", "wcag2aa", "wcag2aaa"],
+  wcag21a: ["wcag2a", "wcag21a"],
+  wcag21aa: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+  wcag21aaa: [
+    "wcag2a",
+    "wcag2aa",
+    "wcag2aaa",
+    "wcag21a",
+    "wcag21aa",
+    "wcag21aaa",
+  ],
+  wcag22a: ["wcag2a", "wcag21a", "wcag22a"],
+  wcag22aa: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22a", "wcag22aa"],
+  wcag22aaa: [
+    "wcag2a",
+    "wcag2aa",
+    "wcag2aaa",
+    "wcag21a",
+    "wcag21aa",
+    "wcag21aaa",
+    "wcag22a",
+    "wcag22aa",
+    "wcag22aaa",
+  ],
+};
+
+function getWcagTags(wcagLevel = DEFAULT_WCAG_LEVEL) {
+  return WCAG_LEVEL_TAGS[wcagLevel] || null;
+}
 
 // Wait for page to be reasonably ready
 async function waitForPageReady(page, timeout = PAGE_SETTLE_TIMEOUT) {
@@ -71,13 +119,13 @@ async function waitForPageReady(page, timeout = PAGE_SETTLE_TIMEOUT) {
 
 // Perform login and return session cookies, then close the login context
 async function getAuthCookies(browser, login) {
-  const context = await browser.newContext({ viewport: VIEWPORT });
+  const context = await browser.newContext(BROWSER_CONTEXT_OPTIONS);
   const page = await context.newPage();
 
   try {
     await page.goto(login.loginUrl, {
       waitUntil: "domcontentloaded",
-      timeout: 30000,
+      timeout: NAVIGATION_TIMEOUT,
     });
     await waitForPageReady(page);
 
@@ -267,8 +315,13 @@ function reconcile(axeViolations, htmlcsIssues, aceIssues) {
 }
 
 // Scan a single page in its own context, with optional pre-set cookies
-async function scanPage(browser, url, cookies) {
-  const context = await browser.newContext({ viewport: VIEWPORT });
+async function scanPage(browser, url, cookies, wcagLevel = DEFAULT_WCAG_LEVEL) {
+  const wcagTags = getWcagTags(wcagLevel);
+  if (!wcagTags) {
+    throw new Error(`Unsupported WCAG level: ${wcagLevel}`);
+  }
+
+  const context = await browser.newContext(BROWSER_CONTEXT_OPTIONS);
 
   if (cookies && cookies.length > 0) {
     await context.addCookies(cookies);
@@ -277,7 +330,10 @@ async function scanPage(browser, url, cookies) {
   const page = await context.newPage();
 
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: NAVIGATION_TIMEOUT,
+    });
     await waitForPageReady(page);
 
     // Reveal hidden elements
@@ -291,7 +347,7 @@ async function scanPage(browser, url, cookies) {
     });
 
     const results = await new AxeBuilder({ page })
-      .withTags(["wcag21a", "wcag21aa", "best-practice"])
+      .withTags([...wcagTags, "best-practice"])
       .analyze();
 
     const violations = results.violations.map(shapeResults);
@@ -328,6 +384,7 @@ async function scanPage(browser, url, cookies) {
       aceError,
       reconciled,
       passes: results.passes.length,
+      wcagLevel,
       status: "done",
     };
   } finally {
@@ -342,10 +399,14 @@ app.get("/health", (_req, res) => {
 
 // Single scan endpoint
 app.post("/scan", async (req, res) => {
-  const { url, login } = req.body;
+  const { url, login, wcagLevel = DEFAULT_WCAG_LEVEL } = req.body;
 
   if (!url) {
     return res.status(400).json({ error: "url is required" });
+  }
+
+  if (!getWcagTags(wcagLevel)) {
+    return res.status(400).json({ error: `Unsupported WCAG level: ${wcagLevel}` });
   }
 
   if (activeScanCount >= MAX_CONCURRENT) {
@@ -367,7 +428,7 @@ app.post("/scan", async (req, res) => {
     }
 
     // Scan the target page in a fresh context
-    const result = await scanPage(browser, url, cookies);
+    const result = await scanPage(browser, url, cookies, wcagLevel);
     res.json(result);
   } catch (err) {
     console.error(`Scan failed for ${url}:`, err.message);
@@ -380,10 +441,14 @@ app.post("/scan", async (req, res) => {
 
 // Batch scan endpoint
 app.post("/scan/batch", async (req, res) => {
-  const { urls } = req.body;
+  const { urls, wcagLevel = DEFAULT_WCAG_LEVEL } = req.body;
 
   if (!urls || !Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ error: "urls array is required" });
+  }
+
+  if (!getWcagTags(wcagLevel)) {
+    return res.status(400).json({ error: `Unsupported WCAG level: ${wcagLevel}` });
   }
 
   if (urls.length > 20) {
@@ -402,7 +467,11 @@ app.post("/scan/batch", async (req, res) => {
     const loginCache = new Map();
 
     for (const entry of urls) {
-      const { url, login } = typeof entry === "string" ? { url: entry } : entry;
+      const {
+        url,
+        login,
+        wcagLevel: entryWcagLevel = wcagLevel,
+      } = typeof entry === "string" ? { url: entry } : entry;
       activeScanCount++;
 
       try {
@@ -419,7 +488,7 @@ app.post("/scan/batch", async (req, res) => {
         }
 
         // Scan in a fresh context (login context is already closed)
-        const result = await scanPage(browser, url, cookies);
+        const result = await scanPage(browser, url, cookies, entryWcagLevel);
 
         res.write(JSON.stringify(result) + "\n");
       } catch (err) {
