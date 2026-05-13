@@ -22,7 +22,11 @@ const PAGE_SETTLE_TIMEOUT = parseInt(
 );
 let activeScanCount = 0;
 
+const ENGLISH_LOCALE = "en-US";
+const ACCEPT_LANGUAGE = "en-US,en;q=0.9";
+
 const BROWSER_ARGS = [
+  `--lang=${ENGLISH_LOCALE}`,
   "--disable-gpu",
   "--disable-dev-shm-usage",
   "--disable-extensions",
@@ -31,6 +35,13 @@ const BROWSER_ARGS = [
 ];
 
 const VIEWPORT = { width: 1024, height: 728 };
+const BROWSER_CONTEXT_OPTIONS = {
+  viewport: VIEWPORT,
+  locale: ENGLISH_LOCALE,
+  extraHTTPHeaders: {
+    "Accept-Language": ACCEPT_LANGUAGE,
+  },
+};
 
 // Wait for page to be reasonably ready
 async function waitForPageReady(page, timeout = PAGE_SETTLE_TIMEOUT) {
@@ -69,7 +80,7 @@ async function waitForPageReady(page, timeout = PAGE_SETTLE_TIMEOUT) {
 
 // Perform login and return session cookies, then close the login context
 async function getAuthCookies(browser, login) {
-  const context = await browser.newContext({ viewport: VIEWPORT });
+  const context = await browser.newContext(BROWSER_CONTEXT_OPTIONS);
   const page = await context.newPage();
 
   try {
@@ -183,7 +194,7 @@ const shapeResults = (v) => ({
 
 // Scan a single page in its own context, with optional pre-set cookies
 async function scanPage(browser, url, cookies) {
-  const context = await browser.newContext({ viewport: VIEWPORT });
+  const context = await browser.newContext(BROWSER_CONTEXT_OPTIONS);
 
   if (cookies && cookies.length > 0) {
     await context.addCookies(cookies);
